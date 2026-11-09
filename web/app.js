@@ -11,6 +11,10 @@
 
 const CFG = window.GENESIS_API_CONFIG;
 const ABI = window.GENESIS_ABI;
+const STAGE = window.GENESIS_STAGE;
+/* A deployment may tune the stage thresholds in config.js. The footer prints
+ * the policy version, so a directory running a local policy says so. */
+const POLICY = STAGE.policy(CFG.stagePolicy);
 
 const TYPES = [
   ["EVM RPC", "HTTPS JSON-RPC"],
@@ -41,6 +45,7 @@ const state = {
   aggregates: new Map(),   // endpointId -> on-chain DayAggregate
   verifications: new Map(),// endpointId -> attestation count
   inactive: new Map(),     // instanceId -> [endpoint] the owner could restore
+  stages: new Map(),       // endpointId -> stageOf() result
   feeds: [],
   feedProblems: [],
   fee: 0n,
@@ -192,15 +197,21 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-/* Once the register has healthy EVM endpoints of its own, prefer them. The
- * directory ends up bootstrapping from the infrastructure it lists. */
+/* Once the register has good EVM endpoints of its own, fall back on them. The
+ * directory ends up bootstrapping from the infrastructure it lists, and it
+ * follows the rule it gives wallets: Reliable or better, at target today,
+ * Preferred first. */
 function rpcCandidates() {
   const configured = Array.isArray(CFG.rpcUrls) ? CFG.rpcUrls.slice() : [];
-  const discovered = state.endpoints
-    .filter((endpoint) => Number(endpoint.kind) === KIND_EVM_HTTP && !endpoint.unreliable)
-    .filter((endpoint) => stateOf(endpoint, metricsFor(endpoint.id)) === "ok")
+  const nodes = state.endpoints
     .filter((endpoint) => endpoint.url.startsWith("https://"))
-    .map((endpoint) => endpoint.url);
+    .map((endpoint) => ({
+      url: endpoint.url,
+      kind: endpoint.kind,
+      stage: stageFor(endpoint)?.stage,
+      belowTargetToday: stateOf(endpoint, metricsFor(endpoint.id)) !== "ok"
+    }));
+  const discovered = STAGE.pickEndpoints(nodes, KIND_EVM_HTTP, Infinity).map((node) => node.url);
   return Array.from(new Set(configured.concat(discovered)));
 }
 
@@ -344,6 +355,55 @@ const STATE_LABEL = {
   idle: "Awaiting measurement"
 };
 
+/* ---------------------------------------------------------------- stages */
+
+/* The 24-hour state above says how an endpoint is doing now; the stage says
+ * how it has done over weeks. It is computed here, from records read off the
+ * chain and from feeds whose signatures were checked, and written nowhere. */
+function computeStages() {
+  const now = Math.floor(Date.now() / 1000);
+  const chain = { today: Math.floor(now / 86400), thresholdBps: state.threshold };
+  const documents = state.feeds.map((feed) => feed.data);
+  state.stages.clear();
+  for (const endpoint of state.endpoints) {
+    const metrics = STAGE.metricsFromFeeds(documents, endpoint, now);
+    state.stages.set(String(endpoint.id), STAGE.stageOf(endpoint, metrics, chain, POLICY));
+  }
+}
+
+const stageFor = (endpoint) => state.stages.get(String(endpoint.id)) || null;
+
+/* Flagged sorts below Listed: it is the one state a wallet must not use. */
+function stageRank(endpoint) {
+  const value = stageFor(endpoint)?.stage;
+  return typeof value === "number" ? value : -1;
+}
+
+const meterHtml = () => `<span class="meter" aria-hidden="true"><i></i><i></i><i></i></span>`;
+
+function stageHtml(result) {
+  if (!result) return "";
+  const label = result.flagged ? "Stage suspended" : result.name;
+  const title = [result.flagged ? result.meaning : `Stage ${result.level} of 3. ${result.meaning}`]
+    .concat(result.next.map((gate) => `Next: ${gate.label} (${gate.detail})`))
+    .join("\n");
+  return `<div class="stage" data-stage="${esc(result.stage)}" title="${esc(title)}">${meterHtml()}<span class="visually-hidden">Quality stage: </span>${esc(label)}</div>`;
+}
+
+/* What each stage adds, rendered from the same rule the page applies. */
+function renderStageLegend() {
+  const needs = STAGE.requirements(POLICY);
+  $("#stageLegend").innerHTML = STAGE.NAMES.map((name, level) => `
+    <div class="stage-step" data-stage="${level}">
+      <div class="stage">${meterHtml()}<b>${esc(name)}</b><small>stage ${level}</small></div>
+      <p>${esc(STAGE.MEANINGS[level])}</p>
+      ${needs[level].length
+        ? `<ul>${needs[level].map((label) => `<li>${esc(label)}</li>`).join("")}</ul>`
+        : `<ul><li>An active record in the registry</li></ul>`}
+    </div>`).join("");
+  $("#stagePolicy").textContent = POLICY.version;
+}
+
 /* ------------------------------------------------------------- the trace */
 
 function traceCells(buckets) {
@@ -384,6 +444,7 @@ function render() {
   const query = $("#search").value.trim().toLowerCase();
   const typeFilter = $("#typeFilter").value;
   const healthFilter = $("#healthFilter").value;
+  const stageFilter = $("#stageFilter").value;
   const sortBy = $("#sortBy").value;
 
   renderReadout();
@@ -393,9 +454,11 @@ function render() {
 
   const scoreOf = (instance) => {
     const own = state.endpoints.filter((endpoint) => String(endpoint.instanceId) === String(instance.id));
+    const stage = Math.max(-1, ...own.map(stageRank));
     const metrics = own.map((endpoint) => metricsFor(endpoint.id)).filter(Boolean);
-    if (!metrics.length) return { uptime: -1, latency: Number.MAX_SAFE_INTEGER };
+    if (!metrics.length) return { stage, uptime: -1, latency: Number.MAX_SAFE_INTEGER };
     return {
+      stage,
       uptime: median(metrics.map((m) => m.uptime_bps)) ?? -1,
       latency: median(metrics.map((m) => m.latency_p95_ms)) ?? Number.MAX_SAFE_INTEGER
     };
@@ -407,6 +470,7 @@ function render() {
     const left = scoreOf(a);
     const right = scoreOf(b);
     if (sortBy === "latency") return left.latency - right.latency;
+    if (sortBy === "stage") return right.stage - left.stage || right.uptime - left.uptime;
     return right.uptime - left.uptime;
   });
 
@@ -418,7 +482,8 @@ function render() {
     if (query && !haystack.includes(query)) continue;
     if (typeFilter) own = own.filter((endpoint) => String(endpoint.kind) === typeFilter);
     if (healthFilter) own = own.filter((endpoint) => stateOf(endpoint, metricsFor(endpoint.id)) === healthFilter);
-    if ((query || typeFilter || healthFilter) && !own.length) continue;
+    if (stageFilter) own = own.filter((endpoint) => stageRank(endpoint) >= Number(stageFilter));
+    if ((query || typeFilter || healthFilter || stageFilter) && !own.length) continue;
 
     own.sort((a, b) => Number(a.kind) - Number(b.kind) || Number(a.id) - Number(b.id));
     shown += 1;
@@ -454,6 +519,7 @@ function renderReadout() {
     parts.push(`target ${percent(state.threshold)}`);
     parts.push(`quorum ${state.summary.adverseReportQuorum}`);
     parts.push(`fee ${ethers.formatEther(state.fee)} L1`);
+    parts.push(`stage policy ${POLICY.version}`);
   }
   $("#footMeta").textContent = parts.join(" · ") || "—";
 }
@@ -510,6 +576,7 @@ function instanceHtml(instance, endpoints, index) {
 function endpointHtml(endpoint, mine) {
   const metrics = metricsFor(endpoint.id);
   const kind = stateOf(endpoint, metrics);
+  const stage = stageFor(endpoint);
   const type = TYPES[Number(endpoint.kind)] || ["Unknown API", ""];
   const aggregate = state.aggregates.get(String(endpoint.id));
   const attested = Number(state.verifications.get(String(endpoint.id)) || 0);
@@ -533,6 +600,13 @@ function endpointHtml(endpoint, mine) {
   if (kind !== "ok" && metrics?.last_error) {
     notes.push(`<span>last error: ${esc(metrics.last_error)}</span>`);
   }
+  if (stage && stage.next.length) {
+    /* Name the first gate holding the endpoint back, with its measured value;
+     * the tooltip lists every open one. */
+    const [first, ...rest] = stage.next;
+    const every = stage.next.map((gate) => `${gate.label}: ${gate.detail}`).join("\n");
+    notes.push(`<span class="next-stage" title="${esc(every)}">next stage: ${esc(first.label.toLowerCase())}, ${esc(first.detail)}${rest.length ? ` (+${rest.length} more)` : ""}</span>`);
+  }
   notes.push(`<span>epoch ${endpoint.epoch} · added ${day(endpoint.addedAt)}</span>`);
 
   const consensus = metrics && metrics.feedCount
@@ -549,9 +623,10 @@ function endpointHtml(endpoint, mine) {
     actions.push(`<button class="btn mini danger" data-act="delEndpoint" data-id="${endpoint.id}">Remove</button>`);
   }
 
-  return `<div class="endpoint ${endpoint.unreliable ? "flagged" : ""}">
+  return `<div class="endpoint ${endpoint.unreliable ? "flagged" : ""}" data-endpoint="${Number(endpoint.id)}">
     <div>
       <div class="state ${kind}"><span class="lamp"></span>${STATE_LABEL[kind]}</div>
+      ${stageHtml(stage)}
       <div class="kind">${esc(type[0])}</div>
       <div class="transport">${esc(type[1])}</div>
     </div>
@@ -631,6 +706,7 @@ async function load() {
     state.endpoints = endpoints;
 
     await loadTelemetry(authorized);
+    computeStages();
     await loadRestorable();
 
     const problems = state.feedProblems.slice();
@@ -669,6 +745,7 @@ function normalizeEndpoint(endpoint) {
     updatedAt: Number(endpoint.updatedAt),
     epoch: Number(endpoint.epoch),
     adverseDayCount: Number(endpoint.adverseDayCount),
+    lastAdverseDay: Number(endpoint.lastAdverseDay),
     kind: Number(endpoint.kind),
     unreliable: Boolean(endpoint.unreliable),
     verified: Boolean(endpoint.verified),
@@ -876,6 +953,7 @@ $("#refreshBtn").onclick = () => load();
 $("#search").oninput = render;
 $("#typeFilter").onchange = render;
 $("#healthFilter").onchange = render;
+$("#stageFilter").onchange = render;
 $("#sortBy").onchange = render;
 
 $("#openRegister").onclick = () => {
@@ -965,6 +1043,7 @@ TYPES.forEach((type, index) => {
   $("#typeFilter").insertAdjacentHTML("beforeend", `<option value="${index}">${esc(type[0])}</option>`);
   $("#editKind").insertAdjacentHTML("beforeend", `<option value="${index}">${esc(type[0])} — ${esc(type[1])}</option>`);
 });
+renderStageLegend();
 
 if (window.ethereum) {
   window.ethereum.on?.("accountsChanged", () => window.location.reload());

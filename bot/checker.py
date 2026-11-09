@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import bisect
 import contextlib
 import ipaddress
 import json
@@ -54,7 +55,7 @@ from eth_account.messages import encode_defunct
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 SCHEMA = "genesisl1-api-telemetry/v3"
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -460,6 +461,16 @@ class Store:
                 (endpoint.id, endpoint.epoch, since),
             ).fetchall()
 
+    def first_seen(self, endpoint: Endpoint) -> int | None:
+        """The earliest probe still held for this endpoint epoch. Reaches back
+        over the whole retention period, not just the longest published window."""
+        with self._lock:
+            row = self.db.execute(
+                "SELECT MIN(ts) FROM probes WHERE endpoint_id=? AND epoch=?",
+                (endpoint.id, endpoint.epoch),
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
     def already_attested(self, endpoint: Endpoint, day: int, kind: str) -> bool:
         with self._lock:
             row = self.db.execute(
@@ -558,6 +569,49 @@ def hourly_buckets(rows: Sequence[tuple], now: int, hours: int = 24) -> list[dic
             "latency_p95_ms": percentile(latencies, 0.95),
         }
     return buckets
+
+
+def snapshot_entry(store: Store, endpoint: Endpoint, now: int) -> dict[str, Any]:
+    """One endpoint's record in the published snapshot.
+
+    Every window belongs to the endpoint's current epoch. The 30-day rows are
+    read once and sliced for the shorter windows. `first_seen` is read
+    separately because it has to reach past the 30-day window: a directory
+    deciding whether an endpoint has a month of history cannot learn that from
+    a window that is itself a month long.
+    """
+    rows_30d = store.window(endpoint, now - 30 * 86_400)
+    stamps = [row[0] for row in rows_30d]
+
+    def since(seconds: int) -> list[tuple]:
+        return rows_30d[bisect.bisect_left(stamps, now - seconds):]
+
+    rows_24h = since(86_400)
+    return {
+        "id": endpoint.id,
+        "instance_id": endpoint.instance_id,
+        "epoch": endpoint.epoch,
+        "kind": endpoint.kind,
+        "kind_name": endpoint.kind_name,
+        "url": endpoint.url,
+        "unreliable": endpoint.unreliable,
+        "verified": endpoint.verified,
+        "adverse_days": endpoint.adverse_days,
+        "first_seen": store.first_seen(endpoint),
+        "stats_1h": summarize(since(3_600)),
+        "stats_24h": summarize(rows_24h),
+        "stats_7d": summarize(since(7 * 86_400)),
+        "stats_30d": summarize(rows_30d),
+        "buckets_24h": hourly_buckets(rows_24h, now),
+    }
+
+
+def probe_due(endpoint: Endpoint, now: float, divisor: int) -> bool:
+    """A flagged endpoint is still probed, in one minute out of `divisor`.
+    Without this it could never accumulate the evidence needed to clear its own
+    flag; at the full rate a fleet would keep loading a host already known to
+    be struggling."""
+    return not endpoint.unreliable or int(now) // 60 % divisor == 0
 
 
 # ------------------------------------------------------------ proof of control
@@ -847,12 +901,8 @@ class Checker:
                     result = await prober.probe(endpoint)
                     await asyncio.to_thread(self.store.record, endpoint, result)
 
-        # A flagged endpoint is still probed, at a reduced rate. Without this it
-        # can never accumulate the evidence needed to clear its own flag.
-        due = [
-            endpoint for endpoint in endpoints
-            if not endpoint.unreliable or int(time.time()) // 60 % self.args.unreliable_divisor == 0
-        ]
+        clock = time.time()
+        due = [endpoint for endpoint in endpoints if probe_due(endpoint, clock, self.args.unreliable_divisor)]
         await asyncio.gather(*(measure(endpoint) for endpoint in due))
 
         now = int(time.time())
@@ -862,24 +912,9 @@ class Checker:
         records: list[tuple[int, int, int, str]] = []
 
         for endpoint in endpoints:
-            rows_24h = self.store.window(endpoint, now - 86_400)
-            stats_24h = summarize(rows_24h)
-            entry = {
-                "id": endpoint.id,
-                "instance_id": endpoint.instance_id,
-                "epoch": endpoint.epoch,
-                "kind": endpoint.kind,
-                "kind_name": endpoint.kind_name,
-                "url": endpoint.url,
-                "unreliable": endpoint.unreliable,
-                "verified": endpoint.verified,
-                "adverse_days": endpoint.adverse_days,
-                "stats_1h": summarize(self.store.window(endpoint, now - 3_600)),
-                "stats_24h": stats_24h,
-                "stats_30d": summarize(self.store.window(endpoint, now - 30 * 86_400)),
-                "buckets_24h": hourly_buckets(rows_24h, now),
-            }
+            entry = snapshot_entry(self.store, endpoint, now)
             snapshot.append(entry)
+            stats_24h = entry["stats_24h"]
 
             metrics = self._metrics_attestation(endpoint, stats_24h, threshold, day)
             control = await self._control_attestation(endpoint, verifier, day)
@@ -934,8 +969,15 @@ class Checker:
             return False
         if stats["uptime_bps"] is None:
             return False
-        # Require real coverage before making a claim about a whole day.
-        if stats["counted"] < self.args.min_samples:
+        # Require real coverage before making a claim about a whole day. A
+        # flagged endpoint is probed in one minute out of --unreliable-divisor,
+        # so its floor is scaled to the rate it is actually probed at. Held to
+        # the full-rate floor it never qualifies, no healthy report is ever
+        # filed, and the flag could only be cleared by a paid URL change.
+        floor = self.args.min_samples
+        if endpoint.unreliable:
+            floor = max(1, floor // self.args.unreliable_divisor)
+        if stats["counted"] < floor:
             return False
         span = (stats["last_checked"] or 0) - (stats["first_checked"] or 0)
         if span < self.args.min_span_seconds:
@@ -999,12 +1041,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     probe.add_argument("--timeout", type=float, default=12.0)
     probe.add_argument("--max-bytes", type=int, default=2 * 1024 * 1024, help="hard cap on any single response")
     probe.add_argument("--stall-seconds", type=int, default=600, help="height must advance within this window")
-    probe.add_argument("--unreliable-divisor", type=int, default=10, help="probe flagged endpoints 1 cycle in N")
+    probe.add_argument("--unreliable-divisor", type=int, default=10,
+                       help="probe flagged endpoints one minute in N; their --min-samples is divided by N")
     probe.add_argument("--allow-private", action="store_true", help="DANGEROUS: permit private network targets")
     probe.add_argument("--no-dns-verification", action="store_true")
 
     report = parser.add_argument_group("attestation")
-    report.add_argument("--min-samples", type=int, default=1000, help="counted probes needed before a daily claim")
+    report.add_argument("--min-samples", type=int, default=1000,
+                        help="counted probes needed before a daily claim; scaled down for flagged endpoints")
     report.add_argument("--min-span-seconds", type=int, default=20 * 3600, help="measurement span needed")
     report.add_argument("--day-edge-seconds", type=int, default=600, help="quiet period around the UTC boundary")
     report.add_argument("--batch-size", type=int, default=40)

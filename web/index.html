@@ -24,6 +24,7 @@
     <nav class="nav-links">
       <a href="#directory">Register</a>
       <a href="#method">Method</a>
+      <a href="#stages">Stages</a>
       <a href="https://genesisl1.com/gov.html">Governance</a>
     </nav>
     <button id="themeBtn" class="icon-btn" type="button" title="Switch between light and dark" aria-label="Switch between light and dark">
@@ -94,8 +95,16 @@
           <option value="down">Flagged unreliable</option>
           <option value="idle">Awaiting measurement</option>
         </select>
+        <label class="visually-hidden" for="stageFilter">Filter by quality stage</label>
+        <select id="stageFilter">
+          <option value="">Any stage</option>
+          <option value="3">Preferred only</option>
+          <option value="2">Reliable or better</option>
+          <option value="1">Verified or better</option>
+        </select>
         <label class="visually-hidden" for="sortBy">Sort</label>
         <select id="sortBy">
+          <option value="stage">Highest stage first</option>
           <option value="uptime">Best uptime first</option>
           <option value="latency">Lowest latency first</option>
           <option value="newest">Newest first</option>
@@ -133,6 +142,18 @@
           <p>No single checker can flag an endpoint; a quorum of independently authorized checkers is required, and clearing a flag needs the same. Every telemetry feed this page reads is signature-checked against the on-chain checker roster before a number is shown.</p>
         </div>
       </div>
+    </div>
+
+    <div class="shell stage-section" id="stages">
+      <div class="eyebrow">Quality stages</div>
+      <h3>Each stage adds requirements to the one below</h3>
+      <div id="stageLegend" class="stage-legend"></div>
+      <p class="stage-note">
+        Every requirement is a pass-or-fail gate, shown with its measured value. A quorum flag
+        suspends the stage until a healthy quorum clears it. The stage is computed in this page
+        from the chain and the verified feeds, and is never written on-chain. Policy
+        <span id="stagePolicy" class="mono">—</span>, rule in <code>web/stage.js</code>.
+      </p>
     </div>
   </section>
 </main>
@@ -267,6 +288,7 @@
 <script src="vendor/ethers-6.13.4.umd.min.js"></script>
 <script src="vendor/abi.js"></script>
 <script src="config.js"></script>
+<script src="stage.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

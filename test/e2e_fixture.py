@@ -262,7 +262,9 @@ def build(solc: str, out_dir: Path) -> dict:
             break
         cursor = next_cursor
 
-    # Endpoint 5 gets flagged by quorum; endpoint 2 has proven host control.
+    # Endpoint 5 gets flagged by quorum; endpoints 1 to 3 have proven host
+    # control. With the history synthesized below, those three land on three
+    # different stages.
     flagged = endpoints[4][0]
     for account in checkers:
         signed = registry.functions.attest(
@@ -275,9 +277,10 @@ def build(solc: str, out_dir: Path) -> dict:
             w3.eth.send_raw_transaction(Account.sign_transaction(signed, account.key).raw_transaction))
 
     verified = endpoints[1][0]
+    proven = [endpoints[index][0] for index in (0, 1, 2)]
     for account in checkers:
         signed = registry.functions.attest(
-            [(int(verified[0]), int(verified[4]), 0, 0, 0, False, True)]
+            [(int(record[0]), int(record[4]), 0, 0, 0, False, True) for record in proven]
         ).build_transaction({
             "from": account.address, "nonce": w3.eth.get_transaction_count(account.address),
             "chainId": w3.eth.chain_id, "gas": 900_000, "gasPrice": w3.eth.gas_price,
@@ -312,13 +315,28 @@ def build(solc: str, out_dir: Path) -> dict:
         "checkers": [account.address for account in checkers],
         "flagged": int(flagged[0]),
         "verified": int(verified[0]),
+        # Endpoint id at each quality stage, given proof of control on 1-3 and
+        # the history in HISTORY_DAYS.
+        "stages": {
+            "preferred": int(endpoints[1][0][0]),
+            "reliable": int(endpoints[0][0][0]),
+            "verified": int(endpoints[2][0][0]),
+            "listed": int(endpoints[3][0][0]),
+            "flagged": int(flagged[0]),
+        },
         "instances": len(SEED),
         "endpoints": len(endpoints),
     }
 
 
+# Days of measured history per endpoint id; every other endpoint has 40.
+HISTORY_DAYS = {1: 10, 3: 3}
+
+
 def synthesize(record: tuple, now: int, feed_index: int) -> dict:
     endpoint_id = int(record[0])
+    days = HISTORY_DAYS.get(endpoint_id, 40)
+    week = min(7, days) * 2_880
     healthy = endpoint_id not in (5, 7)
     base = 9990 if healthy else 9100
     uptime = max(0, min(10_000, base - random.randint(0, 40) + feed_index * 5))
@@ -348,8 +366,11 @@ def synthesize(record: tuple, now: int, feed_index: int) -> dict:
         "kind": int(record[7]), "kind_name": bot.KIND_NAMES[int(record[7])],
         "url": record[12], "unreliable": bool(record[9]), "verified": bool(record[10]),
         "adverse_days": int(record[5]),
+        "first_seen": now - days * DAY,
         "stats_1h": dict(window, samples=120, counted=118),
         "stats_24h": window,
+        "stats_7d": dict(window, samples=week, counted=week - 140, throttled=140,
+                         first_checked=now - min(7, days) * DAY),
         "stats_30d": dict(window, samples=86_400, counted=86_000),
         "buckets_24h": buckets,
     }
@@ -380,6 +401,7 @@ def main() -> int:
         "checkers": context["checkers"],
         "flaggedEndpoint": context["flagged"],
         "verifiedEndpoint": context["verified"],
+        "stages": context["stages"],
         "instances": context["instances"],
         "endpoints": context["endpoints"],
     }

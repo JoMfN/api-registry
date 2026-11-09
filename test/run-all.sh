@@ -12,6 +12,12 @@ run() {
 
 run "contracts"  python3 test/test_registry.py
 run "checker"    python3 test/test_checker.py
+if command -v node > /dev/null; then
+    run "stages" node test/test_stage.js
+else
+    echo; echo "=== stages ==="
+    echo "skipped: install Node.js first"
+fi
 if [ -d node_modules/jsdom ]; then
     run "end to end" node test/e2e.js
 else

@@ -37,9 +37,12 @@ throttling it caused.
 Tune `--burst`, `--concurrency` and `--timeout` to your capacity. `--burst 1` is
 reasonable for a large register.
 
-Flagged endpoints are still probed, at one cycle in `--unreliable-divisor`
+Flagged endpoints are still probed, in one minute out of `--unreliable-divisor`
 (default 10). This is deliberate: an endpoint that is never measured can never
-accumulate the evidence that clears its own flag.
+accumulate the evidence that clears its own flag. Their `--min-samples` floor is
+divided by the same number, because at the reduced rate a flagged endpoint
+collects about 250 probes a day and would never reach the full-rate floor of
+1,000. Change the two together, or recovery attestations stop.
 
 ## Rate limiting
 
@@ -84,6 +87,26 @@ telemetryUrls: [
 The browser verifies each signature against the on-chain roster and combines what
 survives by median. When checkers disagree by more than two percentage points the
 directory says so instead of hiding it in an average.
+
+## Quality stages
+
+The directory computes each endpoint's stage from the chain and the verified feeds
+with `web/stage.js`; nothing is configured on-chain. What operators of checkers
+and directories control:
+
+- **Checker version.** Stages 2 and 3 need `stats_7d` and `first_seen`, published
+  from checker 3.1.0. A feed without them counts as unmeasured, so endpoints it
+  covers stop at Verified until the checker upgrades.
+- **Retention.** Preferred needs 30 days of history in the current epoch, read
+  from `first_seen`. Keep `--retention-days` at 31 or more (default 35).
+- **Three checkers, not two.** With two feeds the median is the average, so one
+  bad feed moves every stage it touches. Preferred also needs two or more feeds
+  that agree within two points, so a single dissenting checker can hold endpoints
+  at Reliable. It cannot promote one.
+- **Policy.** Thresholds are starting values in `POLICY` in `web/stage.js`. A
+  directory can override them with `stagePolicy` in `web/config.js`; any change
+  alters the policy version in the footer. Announce a change before you deploy
+  it, as you would a parameter change.
 
 ## Reading the logs
 

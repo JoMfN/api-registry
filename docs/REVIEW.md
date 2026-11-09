@@ -193,6 +193,17 @@ healthy attestations clears the flag on-chain, free.
 
 *`test_registry.py`: "healthy quorum clears the flag".*
 
+**Follow-up, 2.1.0.** The reduced rate did not fit the floor from C4. At one
+minute in ten a flagged endpoint collects about 250 probes a day, below the
+1,000 a daily claim needs, so no recovery attestation ever qualified and the paid
+exit was back. The contract test passed because it attests directly; nothing
+exercised the checker at its real cadence. The floor is now divided by
+`--unreliable-divisor` for flagged endpoints.
+
+*`test_checker.py`: "a healthy day on a flagged endpoint is attested as recovery
+evidence", which replays a day of probes at the default interval, jitter and
+burst.*
+
 ### D6 — No proof of endpoint control
 
 Nothing stopped anyone registering `rpc.genesisl1.org` under their own name.

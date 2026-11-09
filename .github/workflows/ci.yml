@@ -90,6 +90,17 @@ jobs:
       - run: pip install -r bot/requirements.txt
       - run: python test/test_checker.py
 
+  stages:
+    name: Stage rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # No dependencies: the rule the directory, wallets and scripts share.
+      - run: node test/test_stage.js
+
   e2e:
     name: End-to-end
     runs-on: ubuntu-latest
@@ -127,7 +138,7 @@ jobs:
 
       - name: JavaScript parses
         run: |
-          for file in web/app.js web/config.js test/e2e.js; do
+          for file in web/app.js web/config.js web/stage.js test/e2e.js test/test_stage.js; do
             node --check "$file"
           done
 

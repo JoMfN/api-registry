@@ -3,6 +3,51 @@
 Notable changes to this project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] — 2026-11-07
+
+Quality stages, and a fix that lets a flagged endpoint recover. No contract
+change: the registry and the lens stay as deployed.
+
+### Added
+
+- Quality stages: Listed, Verified, Reliable, Preferred. Each stage adds
+  pass-or-fail gates to the one below, and each gate carries its measured value,
+  so an operator can see what holds an endpoint where it is. The rule lives in
+  `web/stage.js`, a dependency-free file the directory, wallets and scripts can
+  share. Stages are computed in the browser from on-chain records and verified
+  feeds, and are never written to the chain.
+- The directory shows a stage meter per endpoint, the first gate blocking the
+  next stage, a stage filter, a "highest stage first" sort (now the default) and
+  a legend generated from the rule itself. The footer prints the stage policy
+  version.
+- `stagePolicy` in `web/config.js` for deployments that tune thresholds. A
+  changed policy reports a different version.
+- Checker snapshots carry `stats_7d` and `first_seen`, the earliest probe still
+  held for the endpoint's epoch. Both are additive; the schema stays `v3`. A
+  directory treats feeds without them as unmeasured, which caps an endpoint at
+  Verified until its checkers upgrade.
+- `test/test_stage.js`, every gate at its boundary, on plain Node.
+
+### Changed
+
+- The directory's RPC fallback follows the wallet rule: registered EVM endpoints
+  that are Reliable or better and at target today, Preferred first.
+- Checker 3.1.0 reads each endpoint's 30-day window once per cycle and slices
+  the shorter windows from it.
+
+### Fixed
+
+- A flagged endpoint could never recover at the default settings. It is probed
+  in one minute out of `--unreliable-divisor` (10), about 250 probes a day,
+  while a daily attestation needed 1,000 counted probes. No healthy report was
+  ever filed, so the only way out was a paid URL change. The sample floor is now
+  divided by the same divisor for flagged endpoints.
+- `test/e2e.js` failed on Node 22 and later, which jsdom 30 requires: the
+  harness passed jsdom's `AbortSignal` to Node's fetch. It now forwards it to a
+  native one.
+- The e2e check for the lifetime flagged-day count matched any text containing
+  "flagged day". It now looks for the count itself.
+
 ## [2.0.0] — 2026-08-02
 
 A rewrite following a full design review. Version 1 does not compile and its

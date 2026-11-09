@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import sys
 import tempfile
 from argparse import Namespace
@@ -270,7 +271,7 @@ async def run() -> None:
     print("\nattestation gating")
     store_path = Path(tempfile.mkdtemp()) / "test.sqlite3"
     store = mod.Store(str(store_path))
-    gate_args = make_args(min_samples=1000, min_span_seconds=20 * 3600)
+    gate_args = make_args(min_samples=1000, min_span_seconds=20 * 3600, unreliable_divisor=10)
     gate = mod.Checker.__new__(mod.Checker)
     gate.args = gate_args
     gate.store = store
@@ -300,6 +301,68 @@ async def run() -> None:
     check("a new epoch resets the daily gate",
           gate._metrics_attestation(endpoint(0, "https://x.example", epoch=2), good, 9900, 1) is True)
     store.close()
+
+    print("\nrecovery of a flagged endpoint")
+    # Replay one day of the real cadence for a flagged endpoint: a cycle every
+    # --interval (60 s) plus up to --jitter (20 s) of delay, --burst 2, and the
+    # same due rule the checker loop uses. This is the day that has to produce
+    # the healthy report a quorum needs to clear the flag.
+    recovery_store = mod.Store(str(Path(tempfile.mkdtemp()) / "recovery.sqlite3"))
+    recovery = mod.Checker.__new__(mod.Checker)
+    recovery.args = gate_args
+    recovery.store = recovery_store
+    recovery.chain = Namespace(account=object())
+    flagged = endpoint(0, "https://x.example", id=77, unreliable=True)
+    rng = random.Random(29)
+    clock = float(now - 86_400 + 60)
+    while clock < now:
+        if mod.probe_due(flagged, clock, gate_args.unreliable_divisor):
+            for burst in range(2):
+                recovery_store.record(flagged, mod.ProbeResult(int(clock) + burst, True, 120.0, 512, 1000))
+        clock += 60 + rng.uniform(0, 20)
+    day_stats = mod.summarize(recovery_store.window(flagged, now - 86_400))
+    check("a flagged endpoint gets about a tenth of the probes",
+          150 <= day_stats["counted"] <= 400, str(day_stats["counted"]))
+    check("that is below the full-rate floor", day_stats["counted"] < gate_args.min_samples,
+          str(day_stats["counted"]))
+    check("a healthy day on a flagged endpoint is attested as recovery evidence",
+          recovery._metrics_attestation(flagged, day_stats, 9900, 2) is True)
+    check("an adverse day on a flagged endpoint is attested too",
+          recovery._metrics_attestation(flagged, dict(day_stats, uptime_bps=9000), 9900, 2) is True)
+    check("the same coverage does not support a claim about an unflagged endpoint",
+          recovery._metrics_attestation(endpoint(0, "https://x.example", id=77), dict(day_stats, uptime_bps=5000),
+                                        9900, 2) is False)
+    check("a flagged endpoint still needs coverage",
+          recovery._metrics_attestation(flagged, dict(day_stats, counted=40), 9900, 2) is False)
+    check("an unflagged endpoint is probed every cycle",
+          mod.probe_due(endpoint(0, "https://x.example"), now + 7 * 60, 10) is True)
+    recovery_store.close()
+
+    print("\nsnapshot entry")
+    entry_store = mod.Store(str(Path(tempfile.mkdtemp()) / "entry.sqlite3"))
+    measured = endpoint(0, "https://x.example", id=88)
+    for age_days, ok in ((33, True), (10, True), (3, False), (0.5, True)):
+        entry_store.record(measured, mod.ProbeResult(int(now - age_days * 86_400), ok, 100.0, 64, 5000))
+    renamed = endpoint(0, "https://y.example", id=88, epoch=2)
+    entry_store.record(renamed, mod.ProbeResult(now - 60, True, 90.0, 64, 5001))
+    entry = mod.snapshot_entry(entry_store, measured, now)
+    check("the snapshot publishes a 7-day window", entry["stats_7d"]["counted"] == 2,
+          str(entry["stats_7d"]["counted"]))
+    check("the 7-day window is scored like the others", entry["stats_7d"]["uptime_bps"] == 5000,
+          str(entry["stats_7d"]["uptime_bps"]))
+    check("the 30-day window still covers the month", entry["stats_30d"]["counted"] == 3,
+          str(entry["stats_30d"]["counted"]))
+    check("first_seen reaches past the 30-day window", entry["first_seen"] == now - 33 * 86_400,
+          str(entry["first_seen"]))
+    check("first_seen belongs to the endpoint's epoch",
+          mod.snapshot_entry(entry_store, renamed, now)["first_seen"] == now - 60)
+    check("an endpoint with no history has no first_seen",
+          entry_store.first_seen(endpoint(0, "https://x.example", id=89)) is None)
+    check("sliced windows match a direct read",
+          entry["stats_24h"] == mod.summarize(entry_store.window(measured, now - 86_400))
+          and entry["stats_1h"] == mod.summarize(entry_store.window(measured, now - 3_600)))
+    check("the hourly trace is still published", len(entry["buckets_24h"]) == 24)
+    entry_store.close()
 
     await session.close()
     await runner.cleanup()

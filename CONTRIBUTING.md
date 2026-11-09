@@ -24,15 +24,16 @@ To work on the interface with realistic data:
 python test/e2e_fixture.py --hold      # http://127.0.0.1:8646/
 ```
 
-That gives you a populated register with a flagged endpoint, a verified one, and
-two signed telemetry feeds, backed by a real EVM running in-process. Edit files
+That gives you a populated register with a flagged endpoint, one endpoint at each
+quality stage, and two signed telemetry feeds, backed by a real EVM running
+in-process. Edit files
 under `web/` and reload.
 
 ## What a good change looks like
 
 **A test that would fail without it.** Not a test that exercises the new code —
-one that fails if the change is reverted. The three suites already cover the
-security properties; add to whichever fits.
+one that fails if the change is reverted. The four suites already cover the
+security properties and the stage rules; add to whichever fits.
 
 **Regenerated artifacts, committed.** Any contract change means re-running
 `./scripts/build.sh` and committing `contract/abi/`, `contract/build/` and

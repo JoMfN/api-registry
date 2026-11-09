@@ -99,6 +99,13 @@ describing a different registry or chain, or older than thirty minutes is
 discarded with a visible reason. `test/e2e.js` includes a validly signed feed from
 an unauthorized key and asserts its numbers never render.
 
+**Stages add no new trusted party.** `web/stage.js` is a pure function of records
+read through the lens and of feeds that passed the checks above. It fetches and
+stores nothing and writes nothing on-chain, so anyone loading the same inputs gets
+the same stage. Measurements from another epoch are ignored, a missing value
+never passes a gate, and the gates that read on-chain facts (proof of control,
+days since the last flag) use only what a quorum wrote.
+
 **No inline handlers.** Everything is delegated from a single listener keyed on
 `data-act`; the only interpolated values are numeric ids. All rendered strings pass
 through an escaper.
@@ -137,6 +144,16 @@ These are deliberate, not oversights.
   `contestEndpoint`, and the evidence is public.
 - **`withdrawFees` is permissionless by design.** Anyone may trigger the sweep;
   the destination is always the configured recipient, so there is nothing to gain.
+- **One checker can hold an endpoint below Preferred.** Preferred needs two or
+  more feeds within two points of each other, so a dissenting feed blocks it. A
+  single feed cannot grant Preferred, and the disagreement is shown per feed.
+  With only two feeds the median is their average, so one bad feed can also move
+  an endpoint down a stage; run three.
+- **Latency depends on where checkers sit.** The p95 budget is deliberately
+  generous and snapshots are exempt. Spread checkers across regions.
+- **A stage is a directory's view, not a consensus value.** Two directories with
+  different `stagePolicy` settings can disagree. The policy version in each
+  footer makes that visible.
 
 ## Reporting
 

@@ -7,7 +7,7 @@
 [![CI](https://github.com/GenesisL1/api-registry/actions/workflows/ci.yml/badge.svg)](https://github.com/GenesisL1/api-registry/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Solidity 0.8.24](https://img.shields.io/badge/solidity-0.8.24-363636.svg)](contract/GenesisL1APIRegistry.sol)
-[![Tests](https://img.shields.io/badge/tests-177%20passing-1b7a5a.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-279%20passing-1b7a5a.svg)](#tests)
 
 [Deploy](docs/DEPLOYMENT.md) · [Operate](docs/OPERATIONS.md) · [Verify it yourself](docs/VERIFYING.md) · [Threat model](docs/THREAT-MODEL.md) · [Design review](docs/REVIEW.md)
 
@@ -72,14 +72,18 @@ disagreement between checkers is shown rather than averaged away.
 **Operators have a right of reply.** A flagged operator can record a public
 statement on-chain against the endpoint, for the cost of gas.
 
+**Quality is earned in stages, in public.** Every endpoint is Listed, Verified,
+Reliable or Preferred, by rules anyone can rerun on the same chain records and
+signed feeds. No stage is ever written on-chain.
+
 ## Repository
 
 | Path | What it is |
 |---|---|
 | [`contract/`](contract/) | `GenesisL1APIRegistry.sol` holds records, fees and verdicts. `GenesisL1RegistryLens.sol` is a stateless read aggregator that can be replaced without touching state. Solidity 0.8.24. |
-| [`web/`](web/) | The directory. Plain HTML, CSS and JavaScript — no build step, no framework, and no third-party requests at runtime. ethers, fonts and the ABI are all vendored. |
+| [`web/`](web/) | The directory. Plain HTML, CSS and JavaScript — no build step, no framework, and no third-party requests at runtime. ethers, fonts and the ABI are all vendored. [`web/stage.js`](web/stage.js) holds the quality-stage rule, usable on its own by wallets and scripts. |
 | [`bot/`](bot/) | One Python process: probes endpoints, keeps local history, publishes a signed snapshot, anchors attestations. |
-| [`test/`](test/) | 177 checks across three suites. All run without a node, a network or a funded key. |
+| [`test/`](test/) | 279 checks across four suites. All run without a node, a network or a funded key. |
 | [`docs/`](docs/) | Deployment, operations, verification, threat model, and the review this version came out of. |
 
 ## Quick start
@@ -99,7 +103,7 @@ Then read **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The short version:
 
 ```bash
 ./scripts/build.sh                       # needs solc 0.8.24 exactly
-./test/run-all.sh                        # 177 checks
+./test/run-all.sh                        # 279 checks
 
 export DEPLOYER_PRIVATE_KEY=0x...
 python scripts/deploy.py \
@@ -140,7 +144,9 @@ reports.
 
 Before attesting to a day, a checker requires at least 1,000 counted probes
 spanning at least 20 hours, and stays quiet within ten minutes of the UTC boundary
-so a transaction cannot land on the wrong day.
+so a transaction cannot land on the wrong day. A flagged endpoint is probed in one
+minute out of ten, and its floor is divided by ten to match, so the healthy days
+that clear a flag can be attested.
 
 ## Proving you control an endpoint
 
@@ -156,6 +162,39 @@ HTTP  GET https://rpc.example.org/.well-known/genesisl1-registry.txt
 Verification is per measurement epoch, so changing a URL revokes it until the new
 host proves control in turn.
 
+## Quality stages
+
+The flag says whether an endpoint is failing. The stage says how good it has been.
+Each stage adds pass-or-fail gates to the one below, and an endpoint holds the
+highest stage whose gates all pass.
+
+| Stage | Adds | Evidence |
+|---|---|---|
+| 0 · Listed | An active record in the registry | chain |
+| 1 · Verified | Proof of control, confirmed by a quorum for this epoch | chain |
+| 2 · Reliable | No flagged day in 7 days · 7 days measured · 7-day uptime at the on-chain target · within 10 blocks of the median height | chain, feeds |
+| 3 · Preferred | 30 days measured · 30-day uptime ≥ 99.50% · no flagged day in 30 days · 7-day p95 ≤ 1,500 ms (snapshots exempt) · two or more feeds within 2 points · rate-limited on ≤ 5% of probes | chain, feeds |
+
+A quorum flag suspends the stage until a healthy quorum clears it. Every gate is
+shown with its measured value, so an operator reads exactly what blocks the next
+stage: `p95 latency within budget, 1,840 ms · budget 1,500 ms`.
+
+The stage is a view, computed in the browser from records read through the lens
+and feeds whose signatures the directory has checked. It is never written to the
+chain, so healthy endpoints still cost nothing to keep. The rule is one
+dependency-free file, [`web/stage.js`](web/stage.js), which wallets and scripts
+can load to apply the same rule:
+
+```js
+const { metricsFromFeeds, stageOf, pickEndpoints } = require("./web/stage.js");
+const metrics = metricsFromFeeds(verifiedFeeds, endpoint, nowSeconds);
+const { stage, next } = stageOf(endpoint, metrics, { today, thresholdBps });
+```
+
+Thresholds are starting values. A deployment can override them with
+`stagePolicy` in `web/config.js`; the footer then prints a different policy
+version, so a local policy is never mistaken for the shared one.
+
 ## Tests
 
 ```bash
@@ -167,8 +206,9 @@ npm ci
 | Suite | Checks | What it proves |
 |---|---|---|
 | `test/test_registry.py` | 91 | Contracts on a real EVM: fees, quorum, epochs, timelocks, a fee recipient that reverts on receipt, URL validation, handovers, the lens. |
-| `test/test_checker.py` | 50 | Probes against live adversarial servers: redirect refusal, oversized bodies, rebinding, stalled heights, signing, attestation gating. |
-| `test/e2e.js` | 36 | The real page in a headless DOM against real deployed contracts — including a validly signed feed from an unauthorized key, which must never render. |
+| `test/test_checker.py` | 65 | Probes against live adversarial servers: redirect refusal, oversized bodies, rebinding, stalled heights, signing, attestation gating, and a flagged endpoint's day replayed at the real probe rate. |
+| `test/test_stage.js` | 73 | Every stage gate at its boundary, how feeds combine, what an operator is told, and the wallet pick. Plain Node. |
+| `test/e2e.js` | 50 | The real page in a headless DOM against real deployed contracts — including a validly signed feed from an unauthorized key, which must never render, and one endpoint at each stage. |
 
 None of them needs a node, a network or a funded key. CI additionally fails if the
 committed ABI drifts from a fresh compile, if the registry exceeds EIP-170, or if

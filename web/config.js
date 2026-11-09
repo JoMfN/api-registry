@@ -30,5 +30,11 @@ window.GENESIS_API_CONFIG = {
 
   // Instances fetched per lens call. Raise for a small register, lower if your
   // RPC caps eth_call response size.
-  pageSize: 25
+  pageSize: 25,
+
+  // Quality stages are computed in the page by stage.js. Leave this empty to
+  // apply the published policy. Any threshold changed here also changes the
+  // policy version printed in the footer, so readers can tell a local policy
+  // from the shared one. Example: { latencyBudgetMs: 2000 }
+  stagePolicy: {}
 };

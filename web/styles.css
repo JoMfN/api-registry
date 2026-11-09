@@ -51,6 +51,7 @@
   --signal-soft: #e7ecfb;
   --ok: #197a5b;
   --ok-soft: #dff0e9;
+  --pref: #0b5a40;
   --warn: #9a6700;
   --warn-soft: #f8eed6;
   --down: #a32e3f;
@@ -80,6 +81,7 @@
     --signal-soft: #17233f;
     --ok: #4cbf95;
     --ok-soft: #123028;
+    --pref: #8de6c2;
     --warn: #d9a441;
     --warn-soft: #2f2716;
     --down: #e2798a;
@@ -94,7 +96,7 @@
   --paper: #0a0e13; --panel: #131b24; --panel-2: #1a232e;
   --rule: #2a3542; --rule-soft: #202a35;
   --signal: #6d94ff; --signal-soft: #17233f;
-  --ok: #4cbf95; --ok-soft: #123028;
+  --ok: #4cbf95; --ok-soft: #123028; --pref: #8de6c2;
   --warn: #d9a441; --warn-soft: #2f2716;
   --down: #e2798a; --down-soft: #341b21;
   --idle: #6c7a88; --idle-soft: #1c252f;
@@ -306,7 +308,7 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .section-head h2 { font-size: 26px; margin-top: 4px; }
 
 .filters {
-  display: grid; grid-template-columns: minmax(0, 2.2fr) repeat(3, minmax(0, 1fr));
+  display: grid; grid-template-columns: minmax(0, 2fr) repeat(4, minmax(0, 1fr));
   gap: 8px; margin-bottom: 18px;
 }
 
@@ -392,6 +394,28 @@ select { cursor: pointer; }
 .state.down { color: var(--down); } .state.down .lamp { background: var(--down); }
 .state.idle { color: var(--slate); } .state.idle .lamp { background: var(--idle); }
 
+/* Quality stage: three bars, the filled count is the stage. Colour follows the
+ * stage, so Listed reads as grey, Verified as signal blue, Reliable and
+ * Preferred as green. */
+.meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; flex: none; }
+.meter i { display: block; width: 4px; border-radius: 1px; background: var(--rule); }
+.meter i:nth-child(1) { height: 40%; }
+.meter i:nth-child(2) { height: 70%; }
+.meter i:nth-child(3) { height: 100%; }
+[data-stage="1"] .meter i:nth-child(1) { background: var(--signal); }
+[data-stage="2"] .meter i:nth-child(-n+2) { background: var(--ok); }
+[data-stage="3"] .meter i { background: var(--pref); }
+[data-stage="flagged"] .meter i { background: var(--down); opacity: .35; }
+
+.stage {
+  display: flex; align-items: center; gap: 7px; margin-top: 6px;
+  font-size: 12.5px; font-weight: 500; color: var(--ink-2);
+}
+.stage[data-stage="0"] { color: var(--slate); }
+.stage[data-stage="3"] { color: var(--pref); }
+.stage[data-stage="flagged"] { color: var(--down); }
+.endpoint-note .next-stage { color: var(--ink-2); }
+
 .kind { font-size: 13px; font-weight: 500; margin-top: 7px; }
 .transport { font-family: var(--mono); font-size: 10.5px; color: var(--slate); letter-spacing: .04em; }
 
@@ -464,6 +488,26 @@ select { cursor: pointer; }
 .method-cols h4 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
 .method-cols p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
 .method-cols .eyebrow { display: block; margin-bottom: 9px; }
+
+.stage-section { margin-top: 48px; padding-top: 34px; border-top: 1px solid var(--rule); }
+.stage-section h3 { font-size: 19px; margin: 6px 0 16px; }
+.stage-legend {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+  border-radius: var(--radius); overflow: hidden;
+}
+.stage-step { background: var(--panel); padding: 14px 16px 16px; min-width: 0; }
+.stage-step .stage { margin-top: 0; font-size: 14px; }
+.stage-step .stage b { font-weight: 600; }
+.stage-step .stage small {
+  margin-left: auto; font-family: var(--mono); font-size: 9.5px;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--slate);
+}
+.stage-step p { margin: 8px 0 0; font-size: 13px; color: var(--ink-2); }
+.stage-step ul { margin: 10px 0 0; padding-left: 16px; font-size: 12.5px; color: var(--slate); }
+.stage-step li + li { margin-top: 3px; }
+.stage-note { margin: 14px 0 0; max-width: 78ch; font-size: 13px; color: var(--slate); }
+.stage-note code { font-size: 12px; }
 
 /* ------------------------------------------------------------------- footer */
 
@@ -547,6 +591,9 @@ label > input, label > select, label > textarea { margin-top: 5px; }
   .method-grid { grid-template-columns: 1fr; gap: 26px; }
   .endpoint { grid-template-columns: 140px minmax(0, 1fr); }
   .quality { grid-column: 1 / -1; grid-template-columns: repeat(4, 1fr); }
+  .filters { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .filters input { grid-column: 1 / -1; }
+  .stage-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 720px) {
@@ -561,6 +608,7 @@ label > input, label > select, label > textarea { margin-top: 5px; }
   .form-grid { grid-template-columns: 1fr; }
   .endpoint-row { grid-template-columns: 1fr; }
   .readout-figures { grid-template-columns: 1fr 1fr; }
+  .stage-legend { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

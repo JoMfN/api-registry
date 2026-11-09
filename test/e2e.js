@@ -135,6 +135,16 @@ async function main() {
             }
             options.headers = headers;
           }
+          // A page's AbortSignal is native in a browser. Here it is jsdom's,
+          // which the fetch in Node 22 and later rejects, so forward it to a
+          // native one.
+          if (options.signal && !(options.signal instanceof globalThis.AbortSignal)) {
+            const source = options.signal;
+            const controller = new globalThis.AbortController();
+            if (source.aborted) controller.abort(source.reason);
+            else source.addEventListener("abort", () => controller.abort(source.reason), { once: true });
+            options.signal = controller.signal;
+          }
           return globalThis.fetch(url, options);
         };
         window.Headers = globalThis.Headers;
@@ -206,12 +216,38 @@ async function main() {
     check("the on-chain attestation is displayed",
       /checkers attested/.test(window.document.body.textContent));
     check("the lifetime flagged-day count is displayed",
-      /flagged day/.test(window.document.body.textContent));
+      /\d+ flagged days? on record/.test($("#register").textContent));
     check("host control verification is displayed",
       /host control verified/.test(window.document.body.textContent));
     check("the fee is read from the contract", /fee 1\.0 L1/.test($("#footMeta").textContent),
       $("#footMeta").textContent);
     check("the reliability target is read from the contract", /target 99\.00%/.test($("#footMeta").textContent),
+      $("#footMeta").textContent);
+
+    console.log("\nquality stages");
+    const stages = manifest.stages || {};
+    const rowOf = (id) => $(`#register .endpoint[data-endpoint="${id}"]`);
+    const stageOf = (id) => rowOf(id)?.querySelector(".stage")?.dataset.stage;
+    check("every endpoint shows a stage", $$("#register .endpoint .stage").length === manifest.endpoints,
+      `${$$("#register .endpoint .stage").length} of ${manifest.endpoints}`);
+    check("proof of control and a clean month make Preferred", stageOf(stages.preferred) === "3",
+      String(stageOf(stages.preferred)));
+    check("proof of control and ten clean days make Reliable", stageOf(stages.reliable) === "2",
+      String(stageOf(stages.reliable)));
+    check("proof of control with three days of history stays Verified", stageOf(stages.verified) === "1",
+      String(stageOf(stages.verified)));
+    check("without proof of control an endpoint stays Listed", stageOf(stages.listed) === "0",
+      String(stageOf(stages.listed)));
+    check("the flagged endpoint's stage is suspended", stageOf(stages.flagged) === "flagged",
+      String(stageOf(stages.flagged)));
+    check("a Reliable endpoint is told what Preferred needs",
+      /next stage: measured for 30 days, 10 of 30 days/.test(rowOf(stages.reliable)?.textContent || ""),
+      rowOf(stages.reliable)?.querySelector(".next-stage")?.textContent);
+    check("a Preferred endpoint is told nothing more", !rowOf(stages.preferred)?.querySelector(".next-stage"));
+    check("the legend shows all four stages", $$("#stageLegend .stage-step").length === 4,
+      String($$("#stageLegend .stage-step").length));
+    check("the legend lists what Preferred adds", $$("#stageLegend .stage-step")[3]?.querySelectorAll("li").length === 6);
+    check("the stage policy version is shown", /stage policy draft-1/.test($("#footMeta").textContent),
       $("#footMeta").textContent);
 
     console.log("\ninteraction");
@@ -231,7 +267,19 @@ async function main() {
     healthFilter.value = "";
     healthFilter.dispatchEvent(new window.Event("change"));
 
+    const stageFilter = $("#stageFilter");
+    stageFilter.value = "2";
+    stageFilter.dispatchEvent(new window.Event("change"));
+    check("the stage filter keeps Reliable or better",
+      $$("#register .endpoint").length === 2, `${$$("#register .endpoint").length} endpoints`);
+    stageFilter.value = "";
+    stageFilter.dispatchEvent(new window.Event("change"));
+
     const sortBy = $("#sortBy");
+    check("the register is sorted by stage by default", sortBy.value === "stage", sortBy.value);
+    check("the instance holding the Preferred endpoint comes first",
+      Boolean($$("#register .instance")[0]?.querySelector(`[data-endpoint="${stages.preferred}"]`)),
+      $$("#register .instance h3")[0]?.textContent);
     sortBy.value = "name";
     sortBy.dispatchEvent(new window.Event("change"));
     const names = $$("#register .instance h3").map((element) => element.textContent);
